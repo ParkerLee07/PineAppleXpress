@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+IFACE="wlan1"
+HOTSPOT_PROFILE="PineAppleXpress-Lab"
+
+MONITOR_COLLECTOR="pineapplexpress-packet-collector.service"
+MONITOR_RECORDER="pineapplexpress-pcap-recorder.service"
+HOTSPOT_COLLECTOR="pineapplexpress-hotspot-collector.service"
+
+exec 9>/run/lock/pineapplexpress-radio.lock
+
+if ! flock -n 9; then
+    echo "A radio mode change is already in progress."
+    exit 1
+fi
+
+if ! iw dev "$IFACE" info >/dev/null 2>&1; then
+    echo "USB wireless adapter $IFACE was not found."
+    exit 1
+fi
+
+echo "[+] Stopping wireless recon services..."
+systemctl stop "$MONITOR_RECORDER" 2>/dev/null || true
+systemctl stop "$MONITOR_COLLECTOR" 2>/dev/null || true
+
+echo "[+] Returning $IFACE to managed mode..."
+nmcli device set "$IFACE" managed no
+
+ip link set "$IFACE" down
+iw dev "$IFACE" set type managed
+ip addr flush dev "$IFACE"
+ip link set "$IFACE" up
+
+nmcli device set "$IFACE" managed yes
+
+echo "[+] Starting hotspot..."
+nmcli connection up \
+  "$HOTSPOT_PROFILE" \
+  ifname "$IFACE"
+
+echo "[+] Starting decoded hotspot collector..."
+systemctl restart "$HOTSPOT_COLLECTOR"
+
+echo "[OK] $IFACE is serving $HOTSPOT_PROFILE."
+echo "[OK] wlan0 was not modified."

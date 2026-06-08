@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+IFACE="wlan1"
+HOTSPOT_PROFILE="PineAppleXpress-Lab"
+
+MONITOR_COLLECTOR="pineapplexpress-packet-collector.service"
+MONITOR_RECORDER="pineapplexpress-pcap-recorder.service"
+HOTSPOT_COLLECTOR="pineapplexpress-hotspot-collector.service"
+
+exec 9>/run/lock/pineapplexpress-radio.lock
+
+if ! flock -n 9; then
+    echo "A radio mode change is already in progress."
+    exit 1
+fi
+
+if [[ -f /etc/default/pineapplexpress-packets ]]; then
+    # shellcheck disable=SC1091
+    source /etc/default/pineapplexpress-packets
+fi
+
+CHANNEL="${AUTHORIZED_CHANNEL:-44}"
+
+if ! iw dev "$IFACE" info >/dev/null 2>&1; then
+    echo "USB wireless adapter $IFACE was not found."
+    exit 1
+fi
+
+echo "[+] Stopping hotspot collector..."
+systemctl stop "$HOTSPOT_COLLECTOR" 2>/dev/null || true
+
+echo "[+] Stopping hotspot profile..."
+nmcli connection down "$HOTSPOT_PROFILE" 2>/dev/null || true
+
+echo "[+] Switching $IFACE into monitor mode..."
+nmcli device set "$IFACE" managed no
+
+ip link set "$IFACE" down
+iw dev "$IFACE" set type monitor
+ip link set "$IFACE" up
+iw dev "$IFACE" set channel "$CHANNEL"
+
+echo "[+] Starting wireless recon services..."
+systemctl restart "$MONITOR_COLLECTOR"
+systemctl restart "$MONITOR_RECORDER"
+
+echo "[OK] $IFACE is in Monitor mode on channel $CHANNEL."
+echo "[OK] wlan0 was not modified."

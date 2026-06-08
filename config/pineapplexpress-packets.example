@@ -1,0 +1,4 @@
+AUTHORIZED_BSSID=replace-with-authorized-bssid
+AUTHORIZED_CHANNEL=replace-with-authorized-channel
+CAPTURE_INTERFACE=wlan1
+CAPTURE_DIR=/home/pineapple/pineapplexpress/data/captures

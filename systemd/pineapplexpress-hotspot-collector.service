@@ -1,0 +1,18 @@
+[Unit]
+Description=PineAppleXpress Decoded Hotspot Traffic Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pineapple
+SupplementaryGroups=wireshark
+WorkingDirectory=/home/pineapple/pineapplexpress
+ExecStart=/usr/bin/python3 /home/pineapple/pineapplexpress/scripts/hotspot_packet_collector.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

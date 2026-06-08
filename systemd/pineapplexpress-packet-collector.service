@@ -1,0 +1,19 @@
+[Unit]
+Description=PineAppleXpress Authorized Packet Metadata Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pineapple
+SupplementaryGroups=wireshark
+EnvironmentFile=/etc/default/pineapplexpress-packets
+WorkingDirectory=/home/pineapple/pineapplexpress
+ExecStart=/usr/bin/python3 /home/pineapple/pineapplexpress/scripts/packet_collector.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

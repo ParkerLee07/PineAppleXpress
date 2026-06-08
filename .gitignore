@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Runtime output
+data/
+logs/
+captures/
+*.pcap
+*.pcapng
+*.json
+*.tmp
+
+# Secrets and local configuration
+config/*.local
+config/*.conf
+*.hash
+*.hex
+*.key
+*.pem
+*.crt
+*.secret
+80211_keys
+dashboard-secret.txt
+dashboard-password.hash
+
+# Backups
+*.backup*
+*.bak
+*~
+
+# OS and editor files
+.DS_Store
+.vscode/
+.idea/

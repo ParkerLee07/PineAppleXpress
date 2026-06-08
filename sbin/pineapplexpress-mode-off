@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+IFACE="wlan1"
+HOTSPOT_PROFILE="PineAppleXpress-Lab"
+
+MONITOR_COLLECTOR="pineapplexpress-packet-collector.service"
+MONITOR_RECORDER="pineapplexpress-pcap-recorder.service"
+HOTSPOT_COLLECTOR="pineapplexpress-hotspot-collector.service"
+
+exec 9>/run/lock/pineapplexpress-radio.lock
+
+if ! flock -n 9; then
+    echo "A radio mode change is already in progress."
+    exit 1
+fi
+
+echo "[+] Stopping capture services..."
+systemctl stop "$MONITOR_RECORDER" 2>/dev/null || true
+systemctl stop "$MONITOR_COLLECTOR" 2>/dev/null || true
+systemctl stop "$HOTSPOT_COLLECTOR" 2>/dev/null || true
+
+echo "[+] Stopping hotspot..."
+nmcli connection down "$HOTSPOT_PROFILE" 2>/dev/null || true
+
+if iw dev "$IFACE" info >/dev/null 2>&1; then
+    echo "[+] Returning $IFACE to an idle managed interface..."
+
+    nmcli device set "$IFACE" managed no
+
+    ip link set "$IFACE" down
+    iw dev "$IFACE" set type managed
+    ip addr flush dev "$IFACE"
+    ip link set "$IFACE" up
+fi
+
+echo "[OK] $IFACE is idle."
+echo "[OK] wlan0 was not modified."
