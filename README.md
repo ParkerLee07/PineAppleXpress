@@ -1,6 +1,6 @@
 # PineAppleXpress
 
-PineAppleXpress is a lightweight Raspberry Pi OS Lite wireless auditing appliance designed for authorized lab and security-assessment use.
+PineAppleXpress is a lightweight Raspberry Pi OS Lite wireless auditing appliance designed for authorized lab and security-assessment use. The PineAppleXpress was inspired by the Hak5 WiFi Pineapple series of devices.
 
 ## Features
 
