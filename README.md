@@ -48,7 +48,7 @@ Use PineAppleXpress only on networks and devices that you own or are explicitly 
 The installer is currently in active development.
 
 ```bash
-git clone <repository clone command>
+git clone https://github.com/ParkerLee07/PineAppleXpress.git
 cd PineAppleXpress
 chmod +x install_pineapplexpress.sh
 sudo ./install_pineapplexpress.sh
