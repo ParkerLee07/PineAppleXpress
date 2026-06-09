@@ -43,16 +43,16 @@ Stops capture services and leaves wlan1 idle.
 Use PineAppleXpress only on networks and devices that you own or are explicitly authorized to assess. Do not expose the control dashboard directly to the public internet.
 
 ## Installation
+## Installation
 
-An automated installer is planned. Until then:
+The installer is currently in active development.
 
-1. Install Raspberry Pi OS Lite 64-bit.
-2. Install Python, Flask, Gunicorn, TShark, dumpcap, NetworkManager, and dnsmasq-base.
-3. Copy the application files.
-4. Install the systemd service files.
-5. Create local configuration files from the examples in `config/`.
-6. Configure dashboard credentials locally.
-7. Start the dashboard service.
+```bash
+git clone <repository clone command>
+cd PineAppleXpress
+chmod +x install_pineapplexpress.sh
+sudo ./install_pineapplexpress.sh
+```
 
 ## License
 
