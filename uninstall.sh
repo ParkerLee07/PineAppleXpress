@@ -83,7 +83,7 @@ if [[ "$PURGE" -eq 1 ]]; then
 else
     warn "Project files were not deleted."
     echo "To delete them too, run:"
-    echo "  ./uninstall_pineapplexpress.sh --purge"
+    echo "  ./uninstall.sh --purge"
 fi
 
 log "PineAppleXpress uninstall complete"
