@@ -3,35 +3,41 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 # ============================================================
-# PineAppleXpress Installer
+# PineAppleXpress Bootstrap Installer
 # Raspberry Pi OS Lite / Debian-based systems
 #
-# Run from the root of the PineAppleXpress repository:
-#   chmod +x install.sh
-#   ./install.sh
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/ParkerLee07/PineAppleXpress/main/install_pineapplexpress.sh | bash
 #
-# The repository must contain:
-#   app/app.py
-#   scripts/packet_collector.py
-#   scripts/hotspot_packet_collector.py
+# Or:
+#   chmod +x install_pineapplexpress.sh
+#   ./install_pineapplexpress.sh
 #
-# The installer:
-#   - installs packages
-#   - creates /home/<user>/pineapplexpress
-#   - creates a Python virtual environment
-#   - generates fresh dashboard credentials
-#   - configures dumpcap capture permissions
-#   - creates a saved PineAppleXpress-Lab hotspot profile
-#   - installs root-owned radio mode scripts
-#   - installs systemd services
-#   - enables only the dashboard at boot
+# This installer:
+# - downloads PineAppleXpress from GitHub automatically
+# - installs dependencies
+# - installs the app into the current user's home directory
+# - creates a Python virtual environment
+# - generates dashboard credentials
+# - configures packet-capture permissions
+# - creates PineAppleXpress-Lab hotspot profile
+# - installs radio mode scripts
+# - installs user-agnostic systemd services
+# - enables only the dashboard by default
 #
-# It intentionally does NOT:
-#   - modify wlan0
-#   - activate hotspot mode during installation
-#   - activate monitor mode during installation
-#   - store PMKs or wireless decryption keys
+# It does NOT:
+# - modify wlan0
+# - start hotspot mode automatically
+# - start monitor mode automatically
+# - store wireless PMKs or decryption keys
 # ============================================================
+
+REPO_OWNER="ParkerLee07"
+REPO_NAME="PineAppleXpress"
+REPO_BRANCH="main"
+ARCHIVE_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+
+APP_NAME="pineapplexpress"
 
 log() {
     printf '\n\033[1;32m[+] %s\033[0m\n' "$*"
@@ -47,15 +53,16 @@ die() {
 }
 
 cleanup() {
-    unset DASHBOARD_PASSWORD DASHBOARD_PASSWORD_CONFIRM HOTSPOT_PASSWORD
+    unset DASHBOARD_PASSWORD DASHBOARD_PASSWORD_CONFIRM HOTSPOT_PASSWORD || true
+    if [[ -n "${TMP_DIR:-}" && -d "$TMP_DIR" ]]; then
+        rm -rf "$TMP_DIR"
+    fi
 }
 trap cleanup EXIT
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
 if [[ "${EUID}" -eq 0 ]]; then
     TARGET_USER="${SUDO_USER:-}"
-    [[ -n "$TARGET_USER" ]] || die "Run this installer as your normal user, not as root."
+    [[ -n "$TARGET_USER" ]] || die "Run this installer as your normal user, not directly as root."
 else
     TARGET_USER="$(id -un)"
 fi
@@ -63,7 +70,7 @@ fi
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
 [[ -n "$TARGET_HOME" ]] || die "Unable to determine home directory for $TARGET_USER."
 
-APP_HOME="$TARGET_HOME/pineapplexpress"
+APP_HOME="$TARGET_HOME/$APP_NAME"
 APP_DIR="$APP_HOME/app"
 SCRIPT_HOME="$APP_HOME/scripts"
 CONFIG_DIR="$APP_HOME/config"
@@ -77,148 +84,167 @@ MONITOR_RECORDER_SERVICE="pineapplexpress-pcap-recorder.service"
 HOTSPOT_COLLECTOR_SERVICE="pineapplexpress-hotspot-collector.service"
 HOTSPOT_RECORDER_SERVICE="pineapplexpress-hotspot-pcap-recorder.service"
 
+command -v sudo >/dev/null 2>&1 || die "sudo is required."
+
+log "Installing base dependencies"
+
+sudo apt update
+sudo apt install -y \
+    curl \
+    ca-certificates \
+    tar \
+    python3 \
+    python3-venv \
+    python3-pip \
+    network-manager \
+    wireless-tools \
+    iw \
+    tcpdump \
+    tshark \
+    wireshark-common \
+    libcap2-bin \
+    iproute2 \
+    net-tools \
+    rfkill \
+    jq
+
+log "Downloading PineAppleXpress from GitHub"
+
+TMP_DIR="$(mktemp -d)"
+ARCHIVE_PATH="$TMP_DIR/pineapplexpress.tar.gz"
+EXTRACT_DIR="$TMP_DIR/extract"
+
+mkdir -p "$EXTRACT_DIR"
+
+curl -fL "$ARCHIVE_URL" -o "$ARCHIVE_PATH"
+
+tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_DIR"
+
+SOURCE_DIR="$(find "$EXTRACT_DIR" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -n 1)"
+[[ -n "$SOURCE_DIR" && -d "$SOURCE_DIR" ]] || die "Failed to locate extracted PineAppleXpress source."
+
 required_files=(
-    "$SCRIPT_DIR/app/app.py"
-    "$SCRIPT_DIR/scripts/packet_collector.py"
-    "$SCRIPT_DIR/scripts/hotspot_packet_collector.py"
+    "$SOURCE_DIR/app/app.py"
+    "$SOURCE_DIR/scripts/packet_collector.py"
+    "$SOURCE_DIR/scripts/hotspot_packet_collector.py"
 )
 
 for file in "${required_files[@]}"; do
     [[ -f "$file" ]] || die "Missing required repository file: $file"
 done
 
-command -v sudo >/dev/null 2>&1 || die "sudo is required."
+log "Installing PineAppleXpress into $APP_HOME"
 
-cat <<EOF
+sudo mkdir -p "$APP_HOME"
+sudo rsync -a --delete \
+    --exclude ".git" \
+    --exclude ".venv" \
+    --exclude "data" \
+    "$SOURCE_DIR/" "$APP_HOME/"
 
-PineAppleXpress installer
--------------------------
-Repository:      $SCRIPT_DIR
-Install user:    $TARGET_USER
-Runtime folder:  $APP_HOME
+sudo chown -R "$TARGET_USER:$TARGET_USER" "$APP_HOME"
 
-The installer will not modify wlan0 or interrupt the current management Wi-Fi connection.
-EOF
-
-read -rp "Authorized monitor-mode BSSID (leave blank to configure later): " AUTHORIZED_BSSID
-read -rp "Authorized monitor-mode channel [44]: " AUTHORIZED_CHANNEL
-AUTHORIZED_CHANNEL="${AUTHORIZED_CHANNEL:-44}"
-
-read -rsp "Create PineAppleXpress-Lab hotspot password: " HOTSPOT_PASSWORD
-echo
-[[ ${#HOTSPOT_PASSWORD} -ge 8 ]] || die "Hotspot password must contain at least 8 characters."
-
-read -rsp "Create dashboard login password: " DASHBOARD_PASSWORD
-echo
-read -rsp "Confirm dashboard login password: " DASHBOARD_PASSWORD_CONFIRM
-echo
-
-[[ -n "$DASHBOARD_PASSWORD" ]] || die "Dashboard password cannot be empty."
-[[ "$DASHBOARD_PASSWORD" == "$DASHBOARD_PASSWORD_CONFIRM" ]] || die "Dashboard passwords did not match."
-
-log "Installing operating-system packages"
-sudo apt update
-sudo DEBIAN_FRONTEND=noninteractive apt install -y \
-    python3 \
-    python3-venv \
-    python3-pip \
-    python3-setuptools \
-    git \
-    curl \
-    jq \
-    iw \
-    rfkill \
-    usbutils \
-    iproute2 \
-    network-manager \
-    dnsmasq-base \
-    tshark \
-    libcap2-bin \
-    sudo \
-    util-linux
-
-log "Creating runtime directories"
-install -d -m 755 \
-    "$APP_HOME" \
-    "$APP_DIR" \
-    "$SCRIPT_HOME" \
+mkdir -p \
     "$DATA_DIR" \
     "$CAPTURE_DIR" \
     "$HOTSPOT_CAPTURE_DIR"
 
-install -d -m 700 "$CONFIG_DIR"
-
-log "Copying application files"
-install -m 644 "$SCRIPT_DIR/app/app.py" "$APP_DIR/app.py"
-install -m 755 "$SCRIPT_DIR/scripts/packet_collector.py" "$SCRIPT_HOME/packet_collector.py"
-install -m 755 "$SCRIPT_DIR/scripts/hotspot_packet_collector.py" "$SCRIPT_HOME/hotspot_packet_collector.py"
+sudo chown -R "$TARGET_USER:$TARGET_USER" "$DATA_DIR"
 
 log "Creating Python virtual environment"
-python3 -m venv "$APP_HOME/.venv"
-"$APP_HOME/.venv/bin/pip" install --upgrade pip
-"$APP_HOME/.venv/bin/pip" install \
-    flask \
-    gunicorn \
-    Flask-WTF
 
-log "Generating fresh local dashboard credentials"
-DASHBOARD_PASSWORD="$DASHBOARD_PASSWORD" \
-TARGET_HOME="$TARGET_HOME" \
-"$APP_HOME/.venv/bin/python" - <<'PYEOF'
-from __future__ import annotations
+sudo -u "$TARGET_USER" python3 -m venv "$APP_HOME/.venv"
 
-import os
-from pathlib import Path
-from secrets import token_hex
+if [[ -f "$APP_HOME/requirements.txt" ]]; then
+    sudo -u "$TARGET_USER" "$APP_HOME/.venv/bin/pip" install --upgrade pip
+    sudo -u "$TARGET_USER" "$APP_HOME/.venv/bin/pip" install -r "$APP_HOME/requirements.txt"
+else
+    sudo -u "$TARGET_USER" "$APP_HOME/.venv/bin/pip" install --upgrade pip
+    sudo -u "$TARGET_USER" "$APP_HOME/.venv/bin/pip" install flask gunicorn
+fi
 
-from werkzeug.security import generate_password_hash
+log "Configuring dashboard credentials"
 
-target_home = Path(os.environ["TARGET_HOME"])
-config_dir = target_home / "pineapplexpress" / "config"
-config_dir.mkdir(parents=True, exist_ok=True)
+read -r -p "Dashboard username [admin]: " DASHBOARD_USERNAME
+DASHBOARD_USERNAME="${DASHBOARD_USERNAME:-admin}"
 
-secret_file = config_dir / "dashboard-secret.txt"
-password_hash_file = config_dir / "dashboard-password.hash"
+while true; do
+    read -r -s -p "Dashboard password: " DASHBOARD_PASSWORD
+    echo
+    read -r -s -p "Confirm dashboard password: " DASHBOARD_PASSWORD_CONFIRM
+    echo
 
-secret_file.write_text(token_hex(32))
-password_hash_file.write_text(
-    generate_password_hash(os.environ["DASHBOARD_PASSWORD"])
-)
+    if [[ -z "$DASHBOARD_PASSWORD" ]]; then
+        warn "Dashboard password cannot be empty."
+    elif [[ "$DASHBOARD_PASSWORD" != "$DASHBOARD_PASSWORD_CONFIRM" ]]; then
+        warn "Passwords do not match."
+    else
+        break
+    fi
+done
 
-secret_file.chmod(0o600)
-password_hash_file.chmod(0o600)
+sudo tee /etc/default/pineapplexpress-dashboard >/dev/null <<EOF
+PX_DASHBOARD_USER="$DASHBOARD_USERNAME"
+PX_DASHBOARD_PASSWORD="$DASHBOARD_PASSWORD"
+PX_APP_HOME="$APP_HOME"
+EOF
 
-print("[OK] Fresh dashboard secret and password hash created.")
-PYEOF
+sudo chmod 600 /etc/default/pineapplexpress-dashboard
+sudo chown root:root /etc/default/pineapplexpress-dashboard
 
-log "Configuring packet-capture permissions"
-sudo groupadd -f wireshark
-sudo usermod -aG wireshark "$TARGET_USER"
-sudo chgrp wireshark /usr/bin/dumpcap
-sudo chmod 750 /usr/bin/dumpcap
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/dumpcap
+log "Configuring monitor capture defaults"
 
-log "Writing monitor-mode configuration"
+read -r -p "Authorized BSSID for monitor mode, blank to configure later: " AUTHORIZED_BSSID
+read -r -p "Authorized Wi-Fi channel [44]: " AUTHORIZED_CHANNEL
+AUTHORIZED_CHANNEL="${AUTHORIZED_CHANNEL:-44}"
+
 sudo tee /etc/default/pineapplexpress-packets >/dev/null <<EOF
-AUTHORIZED_BSSID=$AUTHORIZED_BSSID
-AUTHORIZED_CHANNEL=$AUTHORIZED_CHANNEL
-CAPTURE_INTERFACE=wlan1
-CAPTURE_DIR=$CAPTURE_DIR
+AUTHORIZED_BSSID="$AUTHORIZED_BSSID"
+AUTHORIZED_CHANNEL="$AUTHORIZED_CHANNEL"
+CAPTURE_INTERFACE="wlan1"
+CAPTURE_DIR="$CAPTURE_DIR"
 EOF
 
-log "Writing hotspot configuration"
+sudo chmod 644 /etc/default/pineapplexpress-packets
+sudo chown root:root /etc/default/pineapplexpress-packets
+
+log "Configuring hotspot capture defaults"
+
 sudo tee /etc/default/pineapplexpress-hotspot >/dev/null <<EOF
-HOTSPOT_PROFILE=PineAppleXpress-Lab
-HOTSPOT_INTERFACE=wlan1
-HOTSPOT_ADDRESS=10.42.50.1/24
-HOTSPOT_SUBNET=10.42.50.0/24
-CAPTURE_INTERFACE=any
-CAPTURE_DIR=$HOTSPOT_CAPTURE_DIR
+CAPTURE_INTERFACE="any"
+CAPTURE_DIR="$HOTSPOT_CAPTURE_DIR"
+HOTSPOT_SUBNET="10.42.50.0/24"
 EOF
 
-log "Creating saved hotspot profile"
-if nmcli -t -f NAME connection show | grep -Fxq "PineAppleXpress-Lab"; then
-    sudo nmcli connection delete PineAppleXpress-Lab >/dev/null
+sudo chmod 644 /etc/default/pineapplexpress-hotspot
+sudo chown root:root /etc/default/pineapplexpress-hotspot
+
+log "Configuring dumpcap permissions"
+
+if getent group wireshark >/dev/null 2>&1; then
+    sudo usermod -aG wireshark "$TARGET_USER"
+fi
+
+if command -v dumpcap >/dev/null 2>&1; then
+    sudo setcap cap_net_raw,cap_net_admin=eip "$(command -v dumpcap)" || \
+        warn "Could not set dumpcap capabilities. Packet capture may require root."
+fi
+
+log "Creating PineAppleXpress-Lab hotspot profile"
+
+while true; do
+    read -r -s -p "Hotspot WPA password, minimum 8 characters: " HOTSPOT_PASSWORD
+    echo
+
+    if [[ "${#HOTSPOT_PASSWORD}" -lt 8 ]]; then
+        warn "Hotspot password must be at least 8 characters."
+    else
+        break
+    fi
+done
+
+if nmcli connection show PineAppleXpress-Lab >/dev/null 2>&1; then
+    sudo nmcli connection delete PineAppleXpress-Lab >/dev/null 2>&1 || true
 fi
 
 sudo nmcli connection add \
@@ -240,10 +266,12 @@ sudo nmcli connection modify \
     ipv4.never-default yes \
     ipv6.method disabled
 
-log "Installing root-owned PCAPNG recorders"
+log "Installing root-owned PCAPNG recorder scripts"
+
 sudo tee /usr/local/sbin/pineapplexpress-pcap-recorder >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 : "${AUTHORIZED_BSSID:?AUTHORIZED_BSSID must be configured in /etc/default/pineapplexpress-packets}"
@@ -274,6 +302,7 @@ EOF
 sudo tee /usr/local/sbin/pineapplexpress-hotspot-pcap-recorder >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 : "${CAPTURE_INTERFACE:=any}"
@@ -303,9 +332,11 @@ sudo chown root:root \
     /usr/local/sbin/pineapplexpress-hotspot-pcap-recorder
 
 log "Installing root-owned radio mode scripts"
+
 sudo tee /usr/local/sbin/pineapplexpress-mode-monitor >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 IFACE="wlan1"
@@ -317,7 +348,10 @@ HOTSPOT_COLLECTOR="pineapplexpress-hotspot-collector.service"
 HOTSPOT_RECORDER="pineapplexpress-hotspot-pcap-recorder.service"
 
 exec 9>/run/lock/pineapplexpress-radio.lock
-flock -n 9 || { echo "A radio mode change is already in progress."; exit 1; }
+flock -n 9 || {
+    echo "A radio mode change is already in progress."
+    exit 1
+}
 
 source /etc/default/pineapplexpress-packets
 
@@ -344,13 +378,14 @@ iw dev "$IFACE" set channel "${AUTHORIZED_CHANNEL:-44}"
 systemctl restart "$MONITOR_COLLECTOR"
 systemctl restart "$MONITOR_RECORDER"
 
-echo "$IFACE is active in Monitor mode on channel ${AUTHORIZED_CHANNEL:-44}."
+echo "$IFACE is active in monitor mode on channel ${AUTHORIZED_CHANNEL:-44}."
 echo "wlan0 was not modified."
 EOF
 
 sudo tee /usr/local/sbin/pineapplexpress-mode-hotspot >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 IFACE="wlan1"
@@ -362,7 +397,10 @@ HOTSPOT_COLLECTOR="pineapplexpress-hotspot-collector.service"
 HOTSPOT_RECORDER="pineapplexpress-hotspot-pcap-recorder.service"
 
 exec 9>/run/lock/pineapplexpress-radio.lock
-flock -n 9 || { echo "A radio mode change is already in progress."; exit 1; }
+flock -n 9 || {
+    echo "A radio mode change is already in progress."
+    exit 1
+}
 
 iw dev "$IFACE" info >/dev/null 2>&1 || {
     echo "USB wireless adapter $IFACE was not found."
@@ -391,6 +429,7 @@ EOF
 sudo tee /usr/local/sbin/pineapplexpress-mode-off >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 IFACE="wlan1"
@@ -402,7 +441,10 @@ HOTSPOT_COLLECTOR="pineapplexpress-hotspot-collector.service"
 HOTSPOT_RECORDER="pineapplexpress-hotspot-pcap-recorder.service"
 
 exec 9>/run/lock/pineapplexpress-radio.lock
-flock -n 9 || { echo "A radio mode change is already in progress."; exit 1; }
+flock -n 9 || {
+    echo "A radio mode change is already in progress."
+    exit 1
+}
 
 systemctl stop "$MONITOR_RECORDER" 2>/dev/null || true
 systemctl stop "$MONITOR_COLLECTOR" 2>/dev/null || true
@@ -434,7 +476,8 @@ sudo chown root:root \
     /usr/local/sbin/pineapplexpress-mode-hotspot \
     /usr/local/sbin/pineapplexpress-mode-off
 
-log "Installing systemd services"
+log "Installing user-agnostic systemd services"
+
 sudo tee "/etc/systemd/system/$DASHBOARD_SERVICE" >/dev/null <<EOF
 [Unit]
 Description=PineAppleXpress Dashboard
@@ -444,11 +487,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$TARGET_USER
+EnvironmentFile=/etc/default/pineapplexpress-dashboard
 WorkingDirectory=$APP_DIR
 ExecStart=$APP_HOME/.venv/bin/gunicorn --workers 1 --bind 0.0.0.0:8080 app:app
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=false
+NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
@@ -457,7 +501,7 @@ EOF
 
 sudo tee "/etc/systemd/system/$MONITOR_COLLECTOR_SERVICE" >/dev/null <<EOF
 [Unit]
-Description=PineAppleXpress Wireless Metadata Collector
+Description=PineAppleXpress Authorized Packet Metadata Collector
 After=network-online.target
 Wants=network-online.target
 
@@ -470,7 +514,7 @@ WorkingDirectory=$APP_HOME
 ExecStart=/usr/bin/python3 $SCRIPT_HOME/packet_collector.py
 Restart=always
 RestartSec=3
-NoNewPrivileges=false
+NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
@@ -479,20 +523,16 @@ EOF
 
 sudo tee "/etc/systemd/system/$MONITOR_RECORDER_SERVICE" >/dev/null <<EOF
 [Unit]
-Description=PineAppleXpress Wireless PCAPNG Recorder
+Description=PineAppleXpress Authorized PCAPNG Recorder
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=$TARGET_USER
-SupplementaryGroups=wireshark
 EnvironmentFile=/etc/default/pineapplexpress-packets
 ExecStart=/usr/local/sbin/pineapplexpress-pcap-recorder
-Restart=on-failure
+Restart=always
 RestartSec=3
-NoNewPrivileges=false
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
@@ -500,7 +540,7 @@ EOF
 
 sudo tee "/etc/systemd/system/$HOTSPOT_COLLECTOR_SERVICE" >/dev/null <<EOF
 [Unit]
-Description=PineAppleXpress Decoded Hotspot Traffic Collector
+Description=PineAppleXpress Hotspot Packet Metadata Collector
 After=network-online.target
 Wants=network-online.target
 
@@ -513,7 +553,7 @@ WorkingDirectory=$APP_HOME
 ExecStart=/usr/bin/python3 $SCRIPT_HOME/hotspot_packet_collector.py
 Restart=always
 RestartSec=3
-NoNewPrivileges=false
+NoNewPrivileges=true
 PrivateTmp=true
 
 [Install]
@@ -528,40 +568,26 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$TARGET_USER
-SupplementaryGroups=wireshark
 EnvironmentFile=/etc/default/pineapplexpress-hotspot
 ExecStart=/usr/local/sbin/pineapplexpress-hotspot-pcap-recorder
-Restart=on-failure
+Restart=always
 RestartSec=3
-NoNewPrivileges=false
-PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-log "Installing restricted sudo policy for dashboard mode controls"
-sudo tee /etc/sudoers.d/pineapplexpress-dashboard >/dev/null <<EOF
-$TARGET_USER ALL=(root) NOPASSWD: /usr/local/sbin/pineapplexpress-mode-monitor, /usr/local/sbin/pineapplexpress-mode-hotspot, /usr/local/sbin/pineapplexpress-mode-off
-EOF
-
-sudo chmod 440 /etc/sudoers.d/pineapplexpress-dashboard
-sudo visudo -cf /etc/sudoers.d/pineapplexpress-dashboard
+sudo chmod 644 /etc/systemd/system/pineapplexpress*.service
+sudo chown root:root /etc/systemd/system/pineapplexpress*.service
 
 log "Reloading systemd"
+
 sudo systemctl daemon-reload
 
-log "Enabling dashboard at boot"
-sudo systemctl enable --now "$DASHBOARD_SERVICE"
+log "Enabling dashboard service"
 
-log "Keeping capture services disabled until selected from the dashboard"
-sudo systemctl disable \
-    "$MONITOR_COLLECTOR_SERVICE" \
-    "$MONITOR_RECORDER_SERVICE" \
-    "$HOTSPOT_COLLECTOR_SERVICE" \
-    "$HOTSPOT_RECORDER_SERVICE" \
-    >/dev/null 2>&1 || true
+sudo systemctl enable "$DASHBOARD_SERVICE"
+sudo systemctl restart "$DASHBOARD_SERVICE"
 
 sudo systemctl stop \
     "$MONITOR_COLLECTOR_SERVICE" \
@@ -570,13 +596,22 @@ sudo systemctl stop \
     "$HOTSPOT_RECORDER_SERVICE" \
     >/dev/null 2>&1 || true
 
+sudo systemctl disable \
+    "$MONITOR_COLLECTOR_SERVICE" \
+    "$MONITOR_RECORDER_SERVICE" \
+    "$HOTSPOT_COLLECTOR_SERVICE" \
+    "$HOTSPOT_RECORDER_SERVICE" \
+    >/dev/null 2>&1 || true
+
 log "Validating dashboard"
+
 sleep 2
 
 if curl -fsS http://127.0.0.1:8080/api/health >/dev/null; then
     echo "[OK] Dashboard health endpoint is responding."
 else
-    warn "Dashboard health endpoint did not respond. Inspect logs with:"
+    warn "Dashboard health endpoint did not respond."
+    echo "Inspect logs with:"
     echo "  sudo journalctl -u $DASHBOARD_SERVICE --no-pager -n 100"
 fi
 
@@ -586,29 +621,39 @@ cat <<EOF
 PineAppleXpress installation complete
 ============================================================
 
+Installed to:
+  $APP_HOME
+
 Dashboard:
-  http://pineapplexpress.local:8080
+  http://<raspberry-pi-ip>:8080
 
-If .local name resolution does not work:
-  hostname -I
+Dashboard username:
+  $DASHBOARD_USERNAME
 
-Radio modes:
-  Monitor Mode  -> wlan1 passive wireless recon
-  Hotspot Mode  -> wlan1 serves PineAppleXpress-Lab
-  Off Mode      -> wlan1 idle
+Services:
+  Dashboard:
+    sudo systemctl status $DASHBOARD_SERVICE --no-pager
+
+  Monitor mode:
+    sudo /usr/local/sbin/pineapplexpress-mode-monitor
+
+  Hotspot mode:
+    sudo /usr/local/sbin/pineapplexpress-mode-hotspot
+
+  Off mode:
+    sudo /usr/local/sbin/pineapplexpress-mode-off
 
 Management:
   wlan0 was not modified.
 
 Important:
-  - Log out and back in once so the new wireshark group membership applies
-    to your interactive shell.
-  - The systemd services already receive the wireshark supplementary group.
-  - If monitor mode was left unconfigured, edit:
-      /etc/default/pineapplexpress-packets
-  - To inspect the dashboard:
-      sudo systemctl status $DASHBOARD_SERVICE --no-pager
-  - To inspect logs:
-      sudo journalctl -u $DASHBOARD_SERVICE --no-pager -n 100
+  Log out and back in once so the new wireshark group membership applies
+  to your interactive shell.
+
+If monitor mode was left unconfigured, edit:
+  sudo nano /etc/default/pineapplexpress-packets
+
+To inspect dashboard logs:
+  sudo journalctl -u $DASHBOARD_SERVICE --no-pager -n 100
 
 EOF
