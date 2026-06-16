@@ -56,4 +56,4 @@ sudo ./install_pineapplexpress.sh
 
 ## License
 
-Add your preferred open-source license before redistribution.
+MIT License
