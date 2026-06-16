@@ -93,6 +93,7 @@ sudo apt install -y \
     curl \
     ca-certificates \
     tar \
+    rsync \
     python3 \
     python3-venv \
     python3-pip \
