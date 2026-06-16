@@ -13,7 +13,7 @@ for arg in "$@"; do
             PURGE=1
             ;;
         -h|--help)
-            echo "Usage: ./uninstall_pineapplexpress.sh [--purge]"
+            echo "Usage: ./uninstall.sh [--purge]"
             exit 0
             ;;
         *)
